@@ -1,0 +1,59 @@
+name: Product API - CRUD CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration-test:
+    name: Docker healthcheck and CRUD tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run basic Product tests
+        run: npm test
+
+      - name: Validate CI Compose configuration
+        run: docker compose -f docker-compose-ci.yaml config --quiet
+
+      - name: Build and wait for healthy services
+        run: >
+          docker compose -f docker-compose-ci.yaml
+          up -d --build --wait --wait-timeout 180
+
+      - name: Show container status
+        run: docker compose -f docker-compose-ci.yaml ps
+
+      - name: Run real CRUD tests
+        env:
+          API_BASE_URL: http://127.0.0.1:3002
+        run: npm run test:integration
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose-ci.yaml ps -a
+          docker compose -f docker-compose-ci.yaml logs --no-color --tail 200
+
+      - name: Clean up CI containers
+        if: always()
+        run: docker compose -f docker-compose-ci.yaml down -v

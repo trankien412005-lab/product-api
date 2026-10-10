@@ -6,7 +6,8 @@
   "scripts": {
     "test": "node --test tests/product.test.js",
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "test:integration": "node --test tests/product.integration.test.js"
   },
   "repository": {
     "type": "git",
