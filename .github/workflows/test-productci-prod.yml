@@ -76,3 +76,99 @@ jobs:
       - name: Clean up CI containers
         if: always()
         run: docker compose -f docker-compose-ci.yaml down -v
+  deploy-local:
+    name: Deploy to local Docker Engine
+    needs: integration-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Windows, X64, product-api-local]
+    timeout-minutes: 10
+
+    concurrency:
+      group: product-api-local-deploy
+      cancel-in-progress: false
+
+    defaults:
+      run:
+        shell: powershell
+
+    env:
+      IMAGE_TAG: sha-${{ github.sha }}
+      DOCKER_CONTEXT: desktop-linux
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Prepare Docker environment
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          docker version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Khong ket noi duoc Docker Desktop"
+          }
+
+          docker volume inspect nammongodb-data
+          if ($LASTEXITCODE -ne 0) {
+            throw "Khong tim thay volume nammongodb-data"
+          }
+
+          @(
+            "PORT=3000"
+            "MONGODB_URI=mongodb://nammongodb:27017/productdb"
+          ) | Set-Content -Path .env.docker -Encoding ascii
+
+          docker compose -p product-api -f docker-compose-prod.yaml config --quiet
+          if ($LASTEXITCODE -ne 0) {
+            throw "Cau hinh Compose khong hop le"
+          }
+
+      - name: Pull tested image from Docker Hub
+        run: |
+          docker compose -p product-api -f docker-compose-prod.yaml pull api
+          if ($LASTEXITCODE -ne 0) {
+            throw "Khong tai duoc image tu Docker Hub"
+          }
+
+      - name: Deploy and wait for healthy containers
+        run: |
+          docker compose -p product-api -f docker-compose-prod.yaml up -d --no-build --wait --wait-timeout 180
+          if ($LASTEXITCODE -ne 0) {
+            throw "Trien khai that bai hoac container chua healthy"
+          }
+
+      - name: Verify deployed image and API health
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $expectedImage = "kinkin2005/product-api:$env:IMAGE_TAG"
+          $actualImage = docker inspect --format '{{.Config.Image}}' product-api-container
+          if ($LASTEXITCODE -ne 0) {
+            throw "Khong kiem tra duoc container API"
+          }
+
+          if ($actualImage.Trim() -ne $expectedImage) {
+            throw "Container dang chay sai image: $actualImage"
+          }
+
+          $health = Invoke-RestMethod -Uri "http://127.0.0.1:3001/health" -TimeoutSec 10
+          $health | ConvertTo-Json
+
+          if ($health.status -ne "healthy" -or $health.database -ne "connected") {
+            throw "API hoac MongoDB chua san sang"
+          }
+
+          docker compose -p product-api -f docker-compose-prod.yaml ps
+          if ($LASTEXITCODE -ne 0) {
+            throw "Khong doc duoc trang thai container"
+          }
+
+          Write-Host "Trien khai thanh cong: $expectedImage"
+
+      - name: Show deployment logs on failure
+        if: failure()
+        run: |
+          docker compose -p product-api -f docker-compose-prod.yaml ps -a
+          docker compose -p product-api -f docker-compose-prod.yaml logs --no-color --tail 100        
